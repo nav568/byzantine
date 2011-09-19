@@ -7,6 +7,7 @@
 
 #include "ConnectionManager.h"
 #include "CustomException.h"
+#include "InputParser.h"
 #include <string>
 #include <cstring>
 #include <netdb.h>
@@ -21,6 +22,7 @@
 
 using namespace std;
 
+class InputParser;
 typedef struct threadStructure{
 	pthread_t id;
 	int index;
@@ -30,8 +32,9 @@ typedef struct threadStructure{
 }threadStructure;
 
 
-ConnectionManager::ConnectionManager(vector<string> hostnames) {
-	this->hostnames = hostnames;
+ConnectionManager::ConnectionManager(InputParser *parser) {
+	this->hostnames = parser->hostnames;
+	this->parser = parser;
 }
 
 
@@ -83,7 +86,7 @@ void* receiveAndProcess(void *void_socket)
 	vector<string> *temp = &(waitArray->connection->hostnames);
 	waitArray->decision = msg.decision;
 
-	
+
 	//TODO record general's message here
 	if(strcmp(msg.whoIsThis,temp->at(0).c_str()) != 0)
 	{
@@ -109,7 +112,7 @@ void* receiveAndProcess(void *void_socket)
 
 		char portchange[128];
 		cout << "Tyring to connect to host: " << temp->at(i) << endl;
-		sprintf(portchange, "%d", PORT);
+		sprintf(portchange, "%s", waitArray->connection->parser->port.c_str());
 
 		if((temp->at(i)).compare(waitArray->connection->getMyHostName()) == 0)
 		{
@@ -149,12 +152,27 @@ void* receiveAndProcess(void *void_socket)
 		freeaddrinfo(servinfo); // all done with this structure
 
 
-		Message toSend(msg.decision,waitArray->connection->getMyHostName());
-		if ((numbytes = send(sockfd, (void *)&toSend, sizeof toSend, 0)) == -1) {
-			perror("recv");
-			return 0;
+		switch(waitArray->connection->parser->mode)
+		{	
+			case InputParser::TRAITOR:
+				{
+					Message toSend(ConnectionManager::RETREAT,waitArray->connection->getMyHostName());
+					if ((numbytes = send(sockfd, (void *)&toSend, sizeof toSend, 0)) == -1) {
+						perror("recv");
+						return 0;
+					}
+					break;
+				}
+			case InputParser::LOYAL:
+				{
+					//loyal
+					Message toSend(msg.decision,waitArray->connection->getMyHostName());
+					if ((numbytes = send(sockfd, (void *)&toSend, sizeof toSend, 0)) == -1) {
+						perror("recv");
+						return 0;
+					}
+				}
 		}
-
 		close(sockfd);
 	}
 }
@@ -164,7 +182,7 @@ void ConnectionManager::generalSendToAll(ConnectionManager::decision decision)
 {
 	for(int i=1; i < hostnames.size(); i++)
 	{
-		cout << "Tyring to connect to host: " << hostnames[i] << endl;
+		cout << "Trying to connect to host: " << hostnames[i] << endl;
 		int sockfd, numbytes;
 		struct addrinfo hints, *servinfo, *p;
 		int rv;
@@ -174,7 +192,7 @@ void ConnectionManager::generalSendToAll(ConnectionManager::decision decision)
 		hints.ai_socktype = SOCK_STREAM;
 
 		char portchange[128];
-		sprintf(portchange, "%d", PORT);
+		sprintf(portchange, "%s", parser->port.c_str());
 		cout << "The port/service is " << portchange << endl;
 
 		if ((rv = getaddrinfo(hostnames[i].c_str(), portchange, &hints, &servinfo)) != 0) {
@@ -208,12 +226,30 @@ void ConnectionManager::generalSendToAll(ConnectionManager::decision decision)
 		printf("client: connecting to %s\n", s);
 		freeaddrinfo(servinfo); // all done with this structure
 
-
-		Message msg(decision,getMyHostName());
-		if ((numbytes = send(sockfd, (void *)&msg, sizeof msg, 0)) == -1) {
-			perror("recv");
-			return;
+		switch(parser->mode)
+		{
+			case InputParser::TRAITOR:
+				{
+					cout << "Betraying... >:) " << endl;
+					//traitor
+					Message msg(ConnectionManager::RETREAT,getMyHostName());
+					if ((numbytes = send(sockfd, (void *)&msg, sizeof msg, 0)) == -1) {
+						perror("recv");
+						return;
+					}
+				}
+				break;
+			case InputParser::LOYAL:
+				{
+					//loyal
+					Message msg(decision,getMyHostName());
+					if ((numbytes = send(sockfd, (void *)&msg, sizeof msg, 0)) == -1) {
+						perror("recv");
+						return;
+					}
+				}
 		}
+
 
 		close(sockfd);
 	}
@@ -252,7 +288,7 @@ void ConnectionManager::waitForConnections()
 	hints.ai_flags = AI_PASSIVE; // use my IP
 
 	char portchange[128];
-	sprintf(portchange, "%d", PORT);
+	sprintf(portchange, "%s", parser->port.c_str());
 
 	char hostname[1024];
 	hostname[1023] = '\0';
@@ -335,9 +371,9 @@ void ConnectionManager::waitForConnections()
 			break;
 		}
 	}	
-	
+
 	cout << "The decision reached is: " << prettyprint(result) << endl;
-	
+
 	delete[] waitArray;
 }
 

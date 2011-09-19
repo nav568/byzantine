@@ -9,9 +9,10 @@
 #define CONNECTIONMANAGER_H_
 #include<vector>
 #include<string>
+class InputParser;
 class ConnectionManager {
 public:
-	ConnectionManager(std::vector<std::string>);
+	ConnectionManager(InputParser *);
 	virtual ~ConnectionManager();
 	void* receiveAndProcess(void *);
 	void waitForConnections();
@@ -23,6 +24,7 @@ public:
 	};
 	std::string prettyprint(ConnectionManager::decision);
 	void generalSendToAll(ConnectionManager::decision);
+	InputParser *parser;
 };
 
 #endif /* CONNECTIONMANAGER_H_ */
