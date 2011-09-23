@@ -5,6 +5,9 @@
  *      Author: nsomasun
  */
 
+
+#include <cstdlib>
+#include <stdio.h>
 #include "ConnectionManager.h"
 #include "CustomException.h"
 #include "InputParser.h"
@@ -18,7 +21,8 @@
 #include <arpa/inet.h>
 #include <vector>
 #include "Message.h"
-#define PORT 3434
+#include <set>
+#include <map>
 
 using namespace std;
 
@@ -27,7 +31,6 @@ typedef struct threadStructure{
 	pthread_t id;
 	int index;
 	int socket;
-	ConnectionManager::decision decision;
 	ConnectionManager *connection;
 }threadStructure;
 
@@ -35,6 +38,25 @@ typedef struct threadStructure{
 ConnectionManager::ConnectionManager(InputParser *parser) {
 	this->hostnames = parser->hostnames;
 	this->parser = parser;
+	isGeneralTraitor = false;
+
+	parser->myId = -1;
+	string myHostName = getMyHostName();
+	//find the id
+	for(int i=0;i<parser->hostnames.size();i++)
+	{
+		if(parser->hostnames[i].compare(myHostName) == 0)
+		{
+			parser->myId = i;
+			break;
+		}
+	}
+
+	cout << "My id is " << parser->myId << endl;
+	if(parser->myId == -1)
+		throw_exception("Hostname not found in the input file");
+
+	pthread_mutex_init(&mutex,NULL);
 }
 
 
@@ -44,6 +66,14 @@ std::string ConnectionManager::prettyprint(ConnectionManager::decision decision)
 		return "ATTACK";
 	else
 		return "RETREAT";
+}
+
+std::string ConnectionManager::prettyprintHostname(int id)
+{
+	if(parser->hostnames.size() < id)
+		throw_exception("The index passed to the vector is out of bounds, id passed");
+
+	return hostnames[id];
 }
 
 
@@ -80,28 +110,102 @@ void* receiveAndProcess(void *void_socket)
 	threadStructure *waitArray = (threadStructure *)void_socket;
 	cout << "Receiving message from socket " << waitArray->socket << endl;
 	Message msg;
-	int recvbytes = recv(waitArray->socket,&msg,sizeof msg, 0);
-	cout << "The number of bytes received is " << recvbytes << endl;
-	cout << "Received the decision value:" << waitArray->connection->prettyprint(msg.decision)  << " From the host: " << msg.whoIsThis << std::endl;
-	vector<string> *temp = &(waitArray->connection->hostnames);
-	waitArray->decision = msg.decision;
+
+	int recvbytes = 0;
+	char *seekWriter = (char *)&msg;
 
 
-	//TODO record general's message here
-	if(strcmp(msg.whoIsThis,temp->at(0).c_str()) != 0)
+	while(recvbytes != sizeof msg)
 	{
-		cout << "Message not received from general " << endl;
-		return 0;
+		int temp =recv(waitArray->socket,seekWriter,sizeof msg, 0);
+		seekWriter+=temp;
+		recvbytes += temp;
 	}
 
-	cout << "Message received from general, re-broadcasting " << endl;
+	//int recvbytes = recv(waitArray->socket, &msg, sizeof msg, MSG_WAITALL);
+	//cout << "The number of bytes received is " << recvbytes << endl;
+
+	for(int i=0;i<4;i++)
+	{
+		cout << "From[" << i << "] <=> " << msg.from[i] << endl;
+	}
+
+	cout << "Received the decision value:" << waitArray->connection->prettyprint(msg.decision)  << " From the host: " << waitArray->connection->prettyprintHostname(msg.findSender()) << "whose id is " << msg.findSender() <<  std::endl;
+
+
+	//verify the message
+	if(!msg.verifySignature())
+	{
+		cout << "The message has a forged signature, hence dropping the message" << endl;
+		return NULL;
+	}
+
+	//check if the message is in the set
+	pair<set<ConnectionManager::decision>::iterator, bool> ret;
+	pthread_mutex_lock(&(waitArray->connection->mutex));
+	ret = waitArray->connection->receivedSet.insert(msg.decision);
+	pthread_mutex_unlock(&(waitArray->connection->mutex));
+	if(ret.second == false)
+	{
+		//already in set, so return;
+		return NULL;
+	}
+
+	//get the sender list
+	std::vector<int> sendList = msg.getSenderList();
+	std::vector<int> newList;
+
+	cout << "The message was from the list of: ";
+	for(int i=0;i< sendList.size() ; i++)
+	{
+		cout << sendList[i] << "-->";
+	}
+	cout << endl;
+
+
+	//create hash map(host:already_received) and insert all hostnames
+	map<int,bool> receivedMap;
+
+	cout << "Setting self-id as received:" <<  waitArray->connection->parser->myId << endl;
+
+	for(int i = 0;i< waitArray->connection->hostnames.size();i++)
+	{
+		receivedMap[i] = false;
+	}
+
+	receivedMap[waitArray->connection->parser->myId] = true;
+	
+	for(int i=0;i<sendList.size();i++)
+	{
+		receivedMap[sendList[i]] = true;
+	}
+
+	for(int i = 0;i< waitArray->connection->hostnames.size();i++)
+	{
+		if(receivedMap[i] == false)
+		{
+			newList.push_back(i);
+		}
+	}
+
+	vector<int> *temp = &(newList);
+
+	cout << "The message is sent to the following people: ";
+	for(int i=0;i< temp->size() ; i++)
+	{
+		cout << temp->at(i) << "-->";
+	}
+	cout << endl;
+
 
 
 	struct hostent *structHostent;
 	struct sockaddr_in toConnect;
 	int sockfd;
-	for(int i=1; i < temp->size(); i++)
+	for(int i=0; i < temp->size(); i++)
 	{
+		srand ( time(NULL) );
+		
 		int sockfd, numbytes;
 		struct addrinfo hints, *servinfo, *p;
 		int rv;
@@ -111,16 +215,24 @@ void* receiveAndProcess(void *void_socket)
 		hints.ai_socktype = SOCK_STREAM;
 
 		char portchange[128];
-		cout << "Tyring to connect to host: " << temp->at(i) << endl;
+		
+		if(rand()%5 == 1 && waitArray->connection->parser->mode == InputParser::TRAITOR )
+		{
+			cout << "I am betraying >:) .. " << endl;
+			cout << "Not sending anything anything " << waitArray->connection->prettyprintHostname(temp->at(i)) << endl;
+			continue;
+		}
+
+		cout << "Tyring to connect to host: " << waitArray->connection->prettyprintHostname(temp->at(i)) << endl;
 		sprintf(portchange, "%s", waitArray->connection->parser->port.c_str());
 
-		if((temp->at(i)).compare(waitArray->connection->getMyHostName()) == 0)
+		if((temp->at(i)) == waitArray->connection->parser->myId )
 		{
 			cout << "Trying to connect to the same host, skipping" << endl;
 			continue;
 		}
 
-		if ((rv = getaddrinfo(temp->at(i).c_str(), portchange, &hints, &servinfo)) != 0) {
+		if ((rv = getaddrinfo(waitArray->connection->prettyprintHostname(temp->at(i)).c_str(), portchange, &hints, &servinfo)) != 0) {
 			fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rv));
 			return 0;
 		}
@@ -154,25 +266,36 @@ void* receiveAndProcess(void *void_socket)
 
 		switch(waitArray->connection->parser->mode)
 		{	
+			
 			case InputParser::TRAITOR:
 				{
-					Message toSend(ConnectionManager::RETREAT,waitArray->connection->getMyHostName());
-					if ((numbytes = send(sockfd, (void *)&toSend, sizeof toSend, 0)) == -1) {
-						perror("recv");
-						return 0;
+					cout << "I am betraying >:) .. " << endl;
+					switch(rand()%2)
+					{
+						case 0:
+							msg.setDecision(ConnectionManager::ATTACK);
+							break;
+						case 1: 
+							msg.setDecision(ConnectionManager::RETREAT);
 					}
-					break;
+					
+					msg.push(waitArray->connection->parser->myId);
+					if ((numbytes = send(sockfd, (void *)&msg, sizeof msg, 0)) == -1) {
+						perror("recv");
+					}
 				}
+				break;
 			case InputParser::LOYAL:
 				{
 					//loyal
-					Message toSend(msg.decision,waitArray->connection->getMyHostName());
-					if ((numbytes = send(sockfd, (void *)&toSend, sizeof toSend, 0)) == -1) {
+					msg.push(waitArray->connection->parser->myId);
+					if ((numbytes = send(sockfd, (void *)&msg, sizeof msg, 0)) == -1) {
 						perror("recv");
-						return 0;
 					}
 				}
 		}
+
+		cout << "Sent to the " << waitArray->connection->prettyprintHostname(temp->at(i)) << endl;
 		close(sockfd);
 	}
 }
@@ -183,6 +306,14 @@ void ConnectionManager::generalSendToAll(ConnectionManager::decision decision)
 	for(int i=1; i < hostnames.size(); i++)
 	{
 		cout << "Trying to connect to host: " << hostnames[i] << endl;
+	
+		if(rand()%5 == 1 && parser->mode == InputParser::TRAITOR)
+		{
+			cout << "I am betraying >:) .. " << endl;
+			cout << "Not sending anything to host: " << prettyprintHostname(i) << endl;
+			continue;
+		}
+
 		int sockfd, numbytes;
 		struct addrinfo hints, *servinfo, *p;
 		int rv;
@@ -232,7 +363,19 @@ void ConnectionManager::generalSendToAll(ConnectionManager::decision decision)
 				{
 					cout << "Betraying... >:) " << endl;
 					//traitor
-					Message msg(ConnectionManager::RETREAT,getMyHostName());
+					Message msg;
+					msg.push(parser->myId);
+					switch(rand()%2)
+					{
+						case 0:
+							msg.setDecision(ConnectionManager::ATTACK);
+							break;
+						case 1: 
+							msg.setDecision(ConnectionManager::RETREAT);
+					}
+
+
+					cout << "Issuing command to: "<< prettyprint(msg.decision) << endl;
 					if ((numbytes = send(sockfd, (void *)&msg, sizeof msg, 0)) == -1) {
 						perror("recv");
 						return;
@@ -242,7 +385,10 @@ void ConnectionManager::generalSendToAll(ConnectionManager::decision decision)
 			case InputParser::LOYAL:
 				{
 					//loyal
-					Message msg(decision,getMyHostName());
+					Message msg;
+					msg.push(parser->myId);
+					msg.setDecision(decision);
+					cout << "Issuing command to: "<< prettyprint(msg.decision) << endl;
 					if ((numbytes = send(sockfd, (void *)&msg, sizeof msg, 0)) == -1) {
 						perror("recv");
 						return;
@@ -335,47 +481,80 @@ void ConnectionManager::waitForConnections()
 
 	printf("server: waiting for connections...\n");
 
-	threadStructure *waitArray = new threadStructure[hostnames.size()];
-	for(int i=0;i<hostnames.size() - 1; i++) {  // main accept() loop
-		sin_size = sizeof their_addr;
-		new_fd = accept(sockfd, (struct sockaddr *)&their_addr, &sin_size);
-		if (new_fd == -1) {
-			perror("accept");
-			continue;
+	//threadStructure *waitArray = new threadStructure[hostnames.size()];
+	vector<threadStructure *> waitVector;
+
+	fd_set master;
+	FD_ZERO(&master);
+	FD_SET(sockfd,&master);
+	int max = sockfd;
+
+	while(1) {  
+
+		struct timeval timeout;
+		timeout.tv_sec=15;
+		timeout.tv_usec=0;
+
+		fd_set reads;
+		FD_ZERO(&reads);
+		reads = master;
+
+		int result = 0;
+		if((result = select(max+1, &reads, NULL, NULL,&timeout)) == -1)
+		{
+			throw_exception("Error in select statement");
 		}
 
-		inet_ntop(their_addr.ss_family,
-				get_in_addr((struct sockaddr *)&their_addr),
-				s, sizeof s);
-		printf("server: got connection from %s\n", s);
-		waitArray[i].index = i;
-		waitArray[i].socket = new_fd;
-		waitArray[i].connection = this;
-		threadHelper(&(waitArray[i]));
-	}
-
-	for(int i=0;i<hostnames.size() - 1; i++) {  // main accept() loop
-		pthread_join(waitArray[i].id,NULL);
-	}
-
-
-	ConnectionManager::decision result = waitArray[0].decision;
-
-	for(int i=0;i<hostnames.size() - 1; i++) {  // main accept() loop
-
-		if(waitArray[i].decision != waitArray[0].decision)
+		if(FD_ISSET(sockfd,&reads))
 		{
+			sin_size = sizeof their_addr;
+			new_fd = accept(sockfd, (struct sockaddr *)&their_addr, &sin_size);
+			if (new_fd == -1) {
+				perror("accept");
+				continue;
+			}
 
-			cout << "Choosing the default decision" << endl;
-			result = RETREAT;
+			inet_ntop(their_addr.ss_family,
+					get_in_addr((struct sockaddr *)&their_addr),
+					s, sizeof s);
+			printf("server: got connection from %s\n", s);
+			threadStructure *waitArray = new threadStructure;
+			waitArray->socket = new_fd;
+			waitArray->connection = this;
+			threadHelper(waitArray);
+			waitVector.push_back(waitArray);
+		}
+		else
+		{
+			//Time out reached
+			cout << "Reached timeout, deciding now......." << endl;
 			break;
 		}
-	}	
+	}
+
+	for(int i=0;i<waitVector.size() ; i++) {  
+		pthread_join(waitVector[i]->id,NULL);
+		delete waitVector[i];
+	}
+
+
+	ConnectionManager::decision result;
+	if(receivedSet.size()==0 | receivedSet.size() >= 2)
+	{
+
+		cout << "Choosing the default decision" << endl;
+		result = RETREAT;
+	}
+	else
+	{
+		result = *(receivedSet.begin());
+	}
+
 
 	cout << "The decision reached is: " << prettyprint(result) << endl;
 
-	delete[] waitArray;
 }
 
 ConnectionManager::~ConnectionManager() {
+	pthread_mutex_destroy(&mutex);
 }

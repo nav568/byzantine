@@ -10,12 +10,15 @@
 #define INPUTPARSER_H_
 #include<vector>
 #include<string>
+#include<map>
 class InputParser {
 public:
 	std::string  port, fileToOpen, order;
 	InputParser(int, char **);
 	virtual ~InputParser();
 	std::vector<std::string> hostnames;
+	int myId;
+
 	enum mode
 	{
 		LOYAL, TRAITOR
