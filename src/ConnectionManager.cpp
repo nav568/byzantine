@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <stdio.h>
 #include "ConnectionManager.h"
+#include "SignatureManager.h"
 #include "CustomException.h"
 #include "InputParser.h"
 #include <string>
@@ -57,6 +58,7 @@ ConnectionManager::ConnectionManager(InputParser *parser) {
 		throw_exception("Hostname not found in the input file");
 
 	pthread_mutex_init(&mutex,NULL);
+	this->signManager = new SignatureManager(this);
 }
 
 
@@ -125,7 +127,7 @@ void* receiveAndProcess(void *void_socket)
 	//int recvbytes = recv(waitArray->socket, &msg, sizeof msg, MSG_WAITALL);
 	//cout << "The number of bytes received is " << recvbytes << endl;
 
-	for(int i=0;i<4;i++)
+	for(int i=0;i<10;i++)
 	{
 		cout << "From[" << i << "] <=> " << msg.from[i] << endl;
 	}
@@ -134,9 +136,9 @@ void* receiveAndProcess(void *void_socket)
 
 
 	//verify the message
-	if(!msg.verifySignature())
+	if(!waitArray->connection->signManager->verifySignature(msg.getSenderList(), &msg))
 	{
-		cout << "The message has a forged signature, hence dropping the message" << endl;
+		cout << "FORGE DETECTED: The message has a forged signature, hence dropping the message" << endl;
 		return NULL;
 	}
 
@@ -145,8 +147,10 @@ void* receiveAndProcess(void *void_socket)
 	pthread_mutex_lock(&(waitArray->connection->mutex));
 	ret = waitArray->connection->receivedSet.insert(msg.decision);
 	pthread_mutex_unlock(&(waitArray->connection->mutex));
+	
 	if(ret.second == false)
 	{
+		cout << "Message already in the set, NOT forwarding the message to anyone" << endl;
 		//already in set, so return;
 		return NULL;
 	}
@@ -202,6 +206,9 @@ void* receiveAndProcess(void *void_socket)
 	struct hostent *structHostent;
 	struct sockaddr_in toConnect;
 	int sockfd;
+	int locateId = msg.push(waitArray->connection->parser->myId);
+	waitArray->connection->signManager->signMessage(&msg, locateId);
+	
 	for(int i=0; i < temp->size(); i++)
 	{
 		srand ( time(NULL) );
@@ -274,12 +281,13 @@ void* receiveAndProcess(void *void_socket)
 					{
 						case 0:
 							msg.setDecision(ConnectionManager::ATTACK);
+							cout << "Sending the decision ATTACK" << endl;
 							break;
 						case 1: 
 							msg.setDecision(ConnectionManager::RETREAT);
+							cout << "Sending the decision RETREAT" << endl;
 					}
 					
-					msg.push(waitArray->connection->parser->myId);
 					if ((numbytes = send(sockfd, (void *)&msg, sizeof msg, 0)) == -1) {
 						perror("recv");
 					}
@@ -288,7 +296,6 @@ void* receiveAndProcess(void *void_socket)
 			case InputParser::LOYAL:
 				{
 					//loyal
-					msg.push(waitArray->connection->parser->myId);
 					if ((numbytes = send(sockfd, (void *)&msg, sizeof msg, 0)) == -1) {
 						perror("recv");
 					}
@@ -364,7 +371,8 @@ void ConnectionManager::generalSendToAll(ConnectionManager::decision decision)
 					cout << "Betraying... >:) " << endl;
 					//traitor
 					Message msg;
-					msg.push(parser->myId);
+					int locateId = msg.push(parser->myId);
+					signManager->signMessage(&msg,locateId);
 					switch(rand()%2)
 					{
 						case 0:
@@ -386,8 +394,9 @@ void ConnectionManager::generalSendToAll(ConnectionManager::decision decision)
 				{
 					//loyal
 					Message msg;
-					msg.push(parser->myId);
+					int locateId = msg.push(parser->myId);
 					msg.setDecision(decision);
+					signManager->signMessage(&msg, locateId);
 					cout << "Issuing command to: "<< prettyprint(msg.decision) << endl;
 					if ((numbytes = send(sockfd, (void *)&msg, sizeof msg, 0)) == -1) {
 						perror("recv");

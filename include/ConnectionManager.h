@@ -12,6 +12,7 @@
 #include <set>
 class InputParser;
 struct Message;
+class SignatureManager;
 class ConnectionManager {
 public:
 	ConnectionManager(InputParser *);
@@ -32,6 +33,7 @@ public:
 	bool isGeneralTraitor;
 	std::set<ConnectionManager::decision> receivedSet;
 	pthread_mutex_t mutex;
+	SignatureManager *signManager;
 };
 
 #endif /* CONNECTIONMANAGER_H_ */

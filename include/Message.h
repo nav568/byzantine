@@ -10,19 +10,22 @@
 #include <string>
 #include <cstring>
 #include <iostream>
+#include "ConnectionManager.h"
+#include "CustomException.h"
 #define processes 1024
-#define signaturesize 1024
+#define signaturesize 4096
 #define free -1
 #define used 1
 #include<vector>
 
 typedef struct signature{
-	char sign[signaturesize];
+	unsigned char sign[signaturesize];
 	int status;
+	unsigned int length;
 }signature;
 
 
-struct Message {
+typedef struct Message {
 
 	public:
 		int from[processes];
@@ -45,14 +48,15 @@ struct Message {
 			decision = decision1;
 		}
 
-		void push(int newId)
+		int push(int newId)
 		{
 			for(int i =0; i< processes; i++)
 			{
 				if(from[i] == free)
 				{
 					from[i] = newId;
-					return;
+					std::cout << "Setting From[" << i << "]" << " to " << from[i] << std::endl;
+					return i;
 				}
 			}
 		}
@@ -70,10 +74,6 @@ struct Message {
 			throw_exception("Message has no sender");
 		}
 
-		bool verifySignature()
-		{
-			return true;
-		}
 
 		std::vector<int> getSenderList()
 		{
@@ -89,6 +89,6 @@ struct Message {
 
 			return toReturn;
 		}
-};
+} Message;
 
 #endif /* MESSAGE_H_ */
